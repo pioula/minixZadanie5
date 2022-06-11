@@ -1,2 +1,2 @@
 diff -rupNEZbB old/usr/ src/usr/ > pu429640.patch
-scp ./upload_files.sh ./pu429640.patch ./run_patch.sh ./test-notify-open.c pu429640@students.mimuw.edu.pl:~/SO/zadanie5
+scp -r ./testy-zad5 ./upload_files.sh ./pu429640.patch ./crun_patch.sh ./xrun_patch.sh pu429640@students.mimuw.edu.pl:~/SO/zadanie5

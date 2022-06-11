@@ -48,6 +48,55 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/const.h src/usr/src/minix/servers/v
  
  #define NR_NONEDEVS	NR_MNTS	/* # slots in nonedev bitmap */
  
+diff -rupNEZbB old/usr/src/minix/servers/vfs/filedes.c src/usr/src/minix/servers/vfs/filedes.c
+--- old/usr/src/minix/servers/vfs/filedes.c	2022-06-11 09:30:51.543197422 +0200
++++ src/usr/src/minix/servers/vfs/filedes.c	2022-06-11 15:59:57.239669010 +0200
+@@ -240,6 +239,29 @@ void invalidate_filp_by_endpt(endpoint_t
+ }
+ 
+ /*===========================================================================*
++ *				wake_listeners				     *
++ *===========================================================================*/
++void wake_listeners(filp)
++struct filp *filp;
++{
++  struct vnode* vnode = filp->filp_vno;
++  if (mutex_trylock(&vnode->notify_lock) != 0)
++    panic("notify mutex should be free");
++
++  if (vnode->listeners_count > 0)
++    printf("Listeners %d\n", vnode->listeners_count);
++  while (vnode->listeners_count > 0) {
++    if (cond_wait(&vnode->for_locker, &vnode->notify_lock) != 0)
++      panic("unable to wait on for_locker");
++  }
++  vnode->listeners_count = vnode->failed_listeners_count;
++  vnode->failed_listeners_count = 0;
++
++  if (mutex_unlock(&vnode->notify_lock) != 0)
++    panic("unable to release lock on notify");
++}
++
++/*===========================================================================*
+  *				lock_filp				     *
+  *===========================================================================*/
+ void lock_filp(filp, locktype)
+@@ -290,6 +312,7 @@ tll_access_t locktype;
+ void unlock_filp(filp)
+ struct filp *filp;
+ {
++  // puts("UNLOCK");
+   /* If this filp holds a soft lock on the vnode, we must be the owner */
+   if (filp->filp_softlock != NULL)
+ 	assert(filp->filp_softlock == fp);
+@@ -307,6 +330,7 @@ struct filp *filp;
+   filp->filp_softlock = NULL;
+   if (mutex_unlock(&filp->filp_lock) != 0)
+ 	panic("unable to release lock on filp");
++  // puts("KONIEC UNLOCK");
+ }
+ 
+ /*===========================================================================*
 diff -rupNEZbB old/usr/src/minix/servers/vfs/Makefile src/usr/src/minix/servers/vfs/Makefile
 --- old/usr/src/minix/servers/vfs/Makefile	2022-06-07 20:56:45.419819611 +0200
 +++ src/usr/src/minix/servers/vfs/Makefile	2022-06-07 21:36:45.384387067 +0200
@@ -63,17 +112,112 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/Makefile src/usr/src/minix/servers/
  SRCS+=  gcov.c
 diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/vfs/notify.c
 --- old/usr/src/minix/servers/vfs/notify.c	1970-01-01 01:00:00.000000000 +0100
-+++ src/usr/src/minix/servers/vfs/notify.c	2022-06-07 21:36:58.484823875 +0200
-@@ -0,0 +1,5 @@
++++ src/usr/src/minix/servers/vfs/notify.c	2022-06-11 15:16:12.019441258 +0200
+@@ -0,0 +1,68 @@
++#include <fcntl.h>
++#include <errno.h>
++
 +#include "fs.h"
++#include "const.h"
++#include "file.h"
++#include "vnode.h"
 +
 +int do_notify(void) {
++    printf("WCHODZE %d\n", m_in.m_lc_vfs_notify.fd);
++    int event = m_in.m_lc_vfs_notify.event;
++    if (event != NOTIFY_OPEN && event != NOTIFY_TRIOPEN &&
++        event != NOTIFY_CREATE && event != NOTIFY_MOVE)
++        return EINVAL;
++
++    printf("POPRAWNY KOMUNIKAT\n");
++    struct filp* filp = get_filp(m_in.m_lc_vfs_notify.fd, VNODE_NONE);
++    struct vnode* vnode = filp->filp_vno;
++    printf("MAM VNODE\n");
++
++    if (mutex_lock(&vnode->notify_lock) != 0)
++        panic("unable to lock mutex");
++    printf("MAM LOCKA %d\n", vnode->listeners_count);
++
++    if (vnode->listeners_count >= NR_NOTIFY)
++        return ENONOTIFY;
++
++    vnode->listeners_count++;
++    printf("MALO LOCKOW %d\n", vnode->listeners_count);
++    if (cond_wait(&vnode->for_listeners, &vnode->notify_lock) != 0)
++        panic("unable to wait on notify_lock");
++    vnode->listeners_count--;
++
++    printf("OBUDZILI MNIE!\n");
++
++    switch (event) {
++        case NOTIFY_OPEN: {
++            printf("OPEN\n");
++            int listeners_count = vnode->listeners_count;
++            if (mutex_unlock(&vnode->notify_lock) != 0)
++                panic("unable to unlock mutex");
++            printf("OTWARLEM MUTEXA I BUDZE\n");
++            if (listeners_count > 0) {
++                printf("BUDZE SWOICH\n");
++                if (cond_signal(&vnode->for_listeners) != 0)
++                    panic("unable to signal");
++            }
++            else {
++                printf("BUDZE LOCKERA\n");
++                if (cond_signal(&vnode->for_locker) != 0)
++                    panic("unable to signal");
++            }
++
++            return 0;
++        }
++        case NOTIFY_TRIOPEN: {
++
++        }
++        case NOTIFY_CREATE: {
++
++        }
++        case NOTIFY_MOVE: {
++
++        }
++    }
++
 +	return(ENOSYS);  // TODO: implementacja VFS_NOTIFY
 +}
+diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vfs/open.c
+--- old/usr/src/minix/servers/vfs/open.c	2022-06-11 09:31:08.215488928 +0200
++++ src/usr/src/minix/servers/vfs/open.c	2022-06-11 15:57:05.738038174 +0200
+@@ -266,6 +266,9 @@ int common_open(char path[PATH_MAX], int
+ 	}
+   }
+ 
++    if (r == OK && (oflags == 0)) {
++        wake_listeners(filp);
++    }
+   unlock_filp(filp);
+ 
+   /* If error, release inode. */
+@@ -672,8 +675,8 @@ int do_close(void)
+  *				close_fd				     *
+  *===========================================================================*/
+ int close_fd(rfp, fd_nr)
+-struct fproc *rfp;
+-int fd_nr;
++        struct fproc *rfp;
++        int fd_nr;
+ {
+ /* Perform the close(fd) system call. */
+   register struct filp *rfilp;
 diff -rupNEZbB old/usr/src/minix/servers/vfs/proto.h src/usr/src/minix/servers/vfs/proto.h
 --- old/usr/src/minix/servers/vfs/proto.h	2022-06-07 20:57:18.604928936 +0200
-+++ src/usr/src/minix/servers/vfs/proto.h	2022-06-07 21:37:04.053009693 +0200
-@@ -348,4 +348,8 @@ void worker_wait(void);
++++ src/usr/src/minix/servers/vfs/proto.h	2022-06-09 15:49:33.169863524 +0200
+@@ -74,6 +74,7 @@ struct filp *get_filp(int fild, tll_acce
+ struct filp *get_filp2(struct fproc *rfp, int fild, tll_access_t locktype);
+ void lock_filp(struct filp *filp, tll_access_t locktype);
+ void unlock_filp(struct filp *filp);
++void wake_listeners(struct filp *filp);
+ void unlock_filps(struct filp *filp1, struct filp *filp2);
+ void invalidate_filp(struct filp *);
+ void invalidate_filp_by_endpt(endpoint_t proc_e);
+@@ -348,4 +349,8 @@ void worker_wait(void);
  struct worker_thread *worker_suspend(void);
  void worker_resume(struct worker_thread *org_self);
  void worker_set_proc(struct fproc *rfp);
@@ -91,6 +235,42 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/table.c src/usr/src/minix/servers/v
  	CALL(VFS_GETSYSINFO)	= do_getsysinfo,	/* getsysinfo(2) */
 +	CALL(VFS_NOTIFY)	= do_notify,		/* notify() */
  };
+diff -rupNEZbB old/usr/src/minix/servers/vfs/vnode.c src/usr/src/minix/servers/vfs/vnode.c
+--- old/usr/src/minix/servers/vfs/vnode.c	2022-06-11 15:21:47.090169603 +0200
++++ src/usr/src/minix/servers/vfs/vnode.c	2022-06-11 15:23:02.570784911 +0200
+@@ -145,6 +145,14 @@ void init_vnodes(void)
+ 	vp->v_fs_count = 0;
+ 	vp->v_mapfs_count = 0;
+ 	tll_init(&vp->v_lock);
++  if (cond_init(&vp->for_locker, NULL) != 0)
++    panic("Failed to initialize for_locker condition variable");
++  if (cond_init(&vp->for_listeners, NULL) != 0)
++    panic("Failed to initialize for_listeners condition variable");
++  if (mutex_init(&vp->notify_lock, NULL) != 0)
++    panic("Failed to initialize notify mutex");
++  vp->listeners_count = 0;
++  vp->failed_listeners_count = 0;
+   }
+ }
+ 
+diff -rupNEZbB old/usr/src/minix/servers/vfs/vnode.h src/usr/src/minix/servers/vfs/vnode.h
+--- old/usr/src/minix/servers/vfs/vnode.h	2022-06-11 15:00:29.531852588 +0200
++++ src/usr/src/minix/servers/vfs/vnode.h	2022-06-11 15:13:07.841944892 +0200
+@@ -20,6 +20,14 @@ EXTERN struct vnode {
+   dev_t v_sdev;                 /* device number for special files */
+   struct vmnt *v_vmnt;          /* vmnt object of the partition */
+   tll_t v_lock;			/* three-level-lock */
++  
++  /* following are for do_notify() */
++  mutex_t notify_lock; /* Mutex for notify. */
++  cond_t for_locker;    /* Wait for listeners to process new file state */
++  cond_t for_listeners; /* Wait for a new event */
++  int listeners_count;      /* Number of event listeners */
++  int failed_listeners_count; /* Number of event listeners
++                                 that has failed condition */
+ } vnode[NR_VNODES];
+ 
+ /* vnode lock types mapping */
 diff -rupNEZbB old/usr/src/sys/sys/errno.h src/usr/src/sys/sys/errno.h
 --- old/usr/src/sys/sys/errno.h	2022-06-07 20:58:38.543769000 +0200
 +++ src/usr/src/sys/sys/errno.h	2022-06-07 21:37:42.474294372 +0200
