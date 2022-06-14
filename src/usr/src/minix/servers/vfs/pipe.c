@@ -304,7 +304,8 @@ void suspend(int why)
   if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE)
 	/* #procs susp'ed on pipe*/
 	susp_count++;
-  if (why == FP_BLOCKED_ON_NOTIFY_OPEN)
+  if (why == FP_BLOCKED_ON_NOTIFY_OPEN || why == FP_BLOCKED_ON_NOTIFY_TRIOPEN ||
+  	why == FP_BLOCKED_ON_NOTIFY_CREATE || why == FP_BLOCKED_ON_NOTIFY_MOVE)
 	listeners++;
 
   fp->fp_blocked_on = why;
@@ -409,16 +410,19 @@ int count;			/* max number of processes to release */
 		/* Find the vnode. Depending on the reason the process was
 		 * suspended, there are different ways of finding it.
 		 */
+
 		if (rp->fp_blocked_on == FP_BLOCKED_ON_POPEN ||
 		    rp->fp_blocked_on == FP_BLOCKED_ON_LOCK ||
-		    rp->fp_blocked_on == FP_BLOCKED_ON_OTHER) {
+		    rp->fp_blocked_on == FP_BLOCKED_ON_OTHER ||
+			rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN ||
+			(rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN &&
+			rp->fp_filp[scratch(rp).file.fd_nr]->filp_count >= 3)) {
 			f = rp->fp_filp[scratch(rp).file.fd_nr];
 			if (f == NULL || f->filp_mode == FILP_CLOSED)
 				continue;
 			if (rp->fp_filp[scratch(rp).file.fd_nr]->filp_vno != vp)
 				continue;
-		} else if (rp->fp_blocked_on == FP_BLOCKED_ON_PIPE || 
-			rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
+		} else if (rp->fp_blocked_on == FP_BLOCKED_ON_PIPE) {
 			if (scratch(rp).file.filp == NULL)
 				continue;
 			if (scratch(rp).file.filp->filp_vno != vp)
@@ -479,8 +483,8 @@ void revive(endpoint_t proc_e, int returned)
 	if (blocked_on == FP_BLOCKED_ON_POPEN) {
 		/* process blocked in open or create */
 		replycode(proc_e, fd_nr);
-	} else if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
-		scratch(rfp).file.filp = NULL;
+	} else if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN || 
+		blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN) {
 		replycode(proc_e, returned);
 	} else if (blocked_on == FP_BLOCKED_ON_SELECT) {
 		replycode(proc_e, returned);

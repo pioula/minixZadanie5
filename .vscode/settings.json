@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "const.h": "c",
+        "file.h": "c",
+        "glo.h": "c",
+        "scratchpad.h": "c"
+    }
+}

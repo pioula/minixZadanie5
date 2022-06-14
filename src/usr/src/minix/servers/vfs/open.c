@@ -676,8 +676,8 @@ int do_close(void)
  *				close_fd				     *
  *===========================================================================*/
 int close_fd(rfp, fd_nr)
-        struct fproc *rfp;
-        int fd_nr;
+struct fproc *rfp;
+int fd_nr;
 {
 /* Perform the close(fd) system call. */
     register struct filp *rfilp;
@@ -712,7 +712,6 @@ int close_fd(rfp, fd_nr)
         if (nr_locks < lock_count)
             lock_revive();	/* one or more locks released */
     }
-
     return(OK);
 }
 

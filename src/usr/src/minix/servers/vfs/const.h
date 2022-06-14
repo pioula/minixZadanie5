@@ -23,7 +23,10 @@
 #define FP_BLOCKED_ON_SELECT	4 /* susp'd on select */
 #define FP_BLOCKED_ON_OTHER	5 /* blocked on other process, check
 				     fp_task to find out */
-#define FP_BLOCKED_ON_NOTIFY_OPEN	6 /* blocked on open notify */
+#define FP_BLOCKED_ON_NOTIFY_OPEN	6 /* blocked on notify open */
+#define FP_BLOCKED_ON_NOTIFY_TRIOPEN	7 /* blocked on notify triopen */
+#define FP_BLOCKED_ON_NOTIFY_CREATE	8 /* blocked on notify create */
+#define FP_BLOCKED_ON_NOTIFY_MOVE	9 /* blocked on notify move */
 
 /* test if the process is blocked on something */
 #define fp_is_blocked(fp)	((fp)->fp_blocked_on != FP_BLOCKED_ON_NONE)
