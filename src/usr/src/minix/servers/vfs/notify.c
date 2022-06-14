@@ -28,7 +28,7 @@ int do_notify(void) {
         return (SUSPEND);
     }
     if (event == NOTIFY_TRIOPEN) {
-        if (filp->filp_count >= 3)
+        if (filp->filp_vno->v_ref_count >= 3)
             return (OK);
         scratch(fp).file.fd_nr = m_in.m_lc_vfs_notify.fd;
         suspend(FP_BLOCKED_ON_NOTIFY_TRIOPEN);
@@ -38,8 +38,10 @@ int do_notify(void) {
     if (!S_ISDIR(filp->filp_vno->v_mode))
         return ENOTDIR;
 
-    // if (event == NOTIFY_CREATE) {
-        
-    // }
+    if (event == NOTIFY_CREATE) {
+        scratch(fp).file.filp = filp;
+        suspend(FP_BLOCKED_ON_NOTIFY_CREATE);
+        return (SUSPEND);
+    }
     return (OK);
 }

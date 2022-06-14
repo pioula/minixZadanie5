@@ -410,13 +410,12 @@ int count;			/* max number of processes to release */
 		/* Find the vnode. Depending on the reason the process was
 		 * suspended, there are different ways of finding it.
 		 */
-
 		if (rp->fp_blocked_on == FP_BLOCKED_ON_POPEN ||
 		    rp->fp_blocked_on == FP_BLOCKED_ON_LOCK ||
 		    rp->fp_blocked_on == FP_BLOCKED_ON_OTHER ||
 			rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN ||
 			(rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN &&
-			rp->fp_filp[scratch(rp).file.fd_nr]->filp_count >= 3)) {
+			vp->v_ref_count >= 3)) {
 			f = rp->fp_filp[scratch(rp).file.fd_nr];
 			if (f == NULL || f->filp_mode == FILP_CLOSED)
 				continue;
@@ -429,11 +428,13 @@ int count;			/* max number of processes to release */
 				continue;
 		} else
 			continue;
-
 		int blocked_on = rp->fp_blocked_on;
 		/* We found the vnode. Revive process. */
 		revive(rp->fp_endpoint, 0);
-		if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
+		if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN || 
+			blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN ||
+			blocked_on == FP_BLOCKED_ON_NOTIFY_CREATE ||
+			blocked_on == FP_BLOCKED_ON_NOTIFY_MOVE) {
 			listeners--;
 			if(listeners < 0)
 				panic("listeners now negative: %d", listeners);
@@ -574,6 +575,11 @@ void unpause(void)
 
 		status = cdev_cancel(dev);
 
+		break;
+	case FP_BLOCKED_ON_NOTIFY_OPEN:
+	case FP_BLOCKED_ON_NOTIFY_TRIOPEN:
+	case FP_BLOCKED_ON_NOTIFY_CREATE:
+	case FP_BLOCKED_ON_NOTIFY_MOVE:
 		break;
 	default :
 		panic("VFS: unknown block reason: %d", blocked_on);

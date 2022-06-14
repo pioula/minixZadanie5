@@ -85,7 +85,7 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/Makefile src/usr/src/minix/servers/
  SRCS+=  gcov.c
 diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/vfs/notify.c
 --- old/usr/src/minix/servers/vfs/notify.c	1970-01-01 01:00:00.000000000 +0100
-+++ src/usr/src/minix/servers/vfs/notify.c	2022-06-15 00:30:42.523736035 +0200
++++ src/usr/src/minix/servers/vfs/notify.c	2022-06-15 01:23:34.782400253 +0200
 @@ -0,0 +1,45 @@
 +#include <fcntl.h>
 +#include <sys/stat.h>
@@ -117,7 +117,7 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/
 +        return (SUSPEND);
 +    }
 +    if (event == NOTIFY_TRIOPEN) {
-+        if (filp->filp_count >= 3)
++        if (filp->filp_vno->v_ref_count >= 3)
 +            return (OK);
 +        scratch(fp).file.fd_nr = m_in.m_lc_vfs_notify.fd;
 +        suspend(FP_BLOCKED_ON_NOTIFY_TRIOPEN);
@@ -134,12 +134,12 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/
 +}
 diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vfs/open.c
 --- old/usr/src/minix/servers/vfs/open.c	2022-06-11 09:31:08.215488928 +0200
-+++ src/usr/src/minix/servers/vfs/open.c	2022-06-15 00:24:42.793292847 +0200
++++ src/usr/src/minix/servers/vfs/open.c	2022-06-15 01:32:55.244850221 +0200
 @@ -32,6 +32,7 @@ static char mode_map[] = {R_BIT, W_BIT,
  static struct vnode *new_node(struct lookup *resolve, int oflags,
  	mode_t bits);
  static int pipe_open(struct vnode *vp, mode_t bits, int oflags);
-+static void wake_listeners(struct filp *filp);
++static void wake_listeners(struct filp *filp, int why);
  
  /*===========================================================================*
   *				do_open					     *
@@ -148,12 +148,12 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vf
    }
  
 +    if (r == OK && (oflags == 0)) {
-+        wake_listeners(filp);
++        wake_listeners(filp, VFS_NOTIFY);
 +    }
    unlock_filp(filp);
  
    /* If error, release inode. */
-@@ -708,6 +712,16 @@ int fd_nr;
+@@ -708,6 +712,17 @@ int fd_nr;
  	if (nr_locks < lock_count)
  		lock_revive();	/* one or more locks released */
    }
@@ -164,17 +164,18 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vf
 +/*===========================================================================*
 + *				wake_listeners				     *
 + *===========================================================================*/
-+void wake_listeners(filp)
++void wake_listeners(filp, why)
 +struct filp *filp;
++int why;
 +{
 +  if (listeners > 0) {
-+    release(filp->filp_vno, VFS_NOTIFY, listeners);
++    release(filp->filp_vno, why, listeners);
 +  }
 +}
 \ No newline at end of file
 diff -rupNEZbB old/usr/src/minix/servers/vfs/pipe.c src/usr/src/minix/servers/vfs/pipe.c
 --- old/usr/src/minix/servers/vfs/pipe.c	2022-06-14 11:38:06.839122511 +0200
-+++ src/usr/src/minix/servers/vfs/pipe.c	2022-06-15 00:30:37.411823085 +0200
++++ src/usr/src/minix/servers/vfs/pipe.c	2022-06-15 01:28:44.076070175 +0200
 @@ -304,6 +304,9 @@ void suspend(int why)
    if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE)
  	/* #procs susp'ed on pipe*/
@@ -194,26 +195,33 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/pipe.c src/usr/src/minix/servers/vf
  int count;			/* max number of processes to release */
  {
  /* Check to see if any process is hanging on vnode 'vp'. If one is, and it
-@@ -410,7 +413,10 @@ int count;			/* max number of processes
- 
+@@ -407,10 +410,12 @@ int count;			/* max number of processes
+ 		/* Find the vnode. Depending on the reason the process was
+ 		 * suspended, there are different ways of finding it.
+ 		 */
+-
  		if (rp->fp_blocked_on == FP_BLOCKED_ON_POPEN ||
  		    rp->fp_blocked_on == FP_BLOCKED_ON_LOCK ||
 -		    rp->fp_blocked_on == FP_BLOCKED_ON_OTHER) {
 +		    rp->fp_blocked_on == FP_BLOCKED_ON_OTHER ||
 +			rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN ||
 +			(rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN &&
-+			rp->fp_filp[scratch(rp).file.fd_nr]->filp_count >= 3)) {
++			vp->v_ref_count >= 3)) {
  			f = rp->fp_filp[scratch(rp).file.fd_nr];
  			if (f == NULL || f->filp_mode == FILP_CLOSED)
  				continue;
-@@ -424,11 +430,19 @@ int count;			/* max number of processes
+@@ -423,12 +428,22 @@ int count;			/* max number of processes
+ 				continue;
  		} else
  			continue;
- 
+-
 +		int blocked_on = rp->fp_blocked_on;
  		/* We found the vnode. Revive process. */
  		revive(rp->fp_endpoint, 0);
-+		if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
++		if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN || 
++			blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN ||
++			blocked_on == FP_BLOCKED_ON_NOTIFY_CREATE ||
++			blocked_on == FP_BLOCKED_ON_NOTIFY_MOVE) {
 +			listeners--;
 +			if(listeners < 0)
 +				panic("listeners now negative: %d", listeners);
@@ -226,7 +234,7 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/pipe.c src/usr/src/minix/servers/vf
  		if (--count == 0) return;
  	}
    }
-@@ -470,6 +483,9 @@ void revive(endpoint_t proc_e, int retur
+@@ -470,6 +484,9 @@ void revive(endpoint_t proc_e, int retur
  	if (blocked_on == FP_BLOCKED_ON_POPEN) {
  		/* process blocked in open or create */
  		replycode(proc_e, fd_nr);
@@ -236,6 +244,18 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/pipe.c src/usr/src/minix/servers/vf
  	} else if (blocked_on == FP_BLOCKED_ON_SELECT) {
  		replycode(proc_e, returned);
  	} else {
+@@ -559,6 +576,11 @@ void unpause(void)
+ 		status = cdev_cancel(dev);
+ 
+ 		break;
++	case FP_BLOCKED_ON_NOTIFY_OPEN:
++	case FP_BLOCKED_ON_NOTIFY_TRIOPEN:
++	case FP_BLOCKED_ON_NOTIFY_CREATE:
++	case FP_BLOCKED_ON_NOTIFY_MOVE:
++		break;
+ 	default :
+ 		panic("VFS: unknown block reason: %d", blocked_on);
+   }
 diff -rupNEZbB old/usr/src/minix/servers/vfs/proto.h src/usr/src/minix/servers/vfs/proto.h
 --- old/usr/src/minix/servers/vfs/proto.h	2022-06-14 19:49:46.356055155 +0200
 +++ src/usr/src/minix/servers/vfs/proto.h	2022-06-14 22:57:08.880217639 +0200
