@@ -722,14 +722,7 @@ int close_fd(rfp, fd_nr)
 void wake_listeners(filp)
 struct filp *filp;
 {
-  struct vnode* vnode = filp->filp_vno;
-
-  if (vnode->listeners_count > 0) {
-    printf("Listeners %d\n", vnode->listeners_count);  
-    int wakings = vnode->listeners_count;
-    release(vnode, VFS_NOTIFY, wakings);
-
-    vnode->listeners_count = 0;
-    puts("Wychodze z petli");
-  } // DEBUG
+  if (listeners > 0) {
+    release(filp->filp_vno, VFS_NOTIFY, listeners);
+  }
 }

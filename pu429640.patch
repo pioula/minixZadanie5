@@ -82,8 +82,8 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/Makefile src/usr/src/minix/servers/
  SRCS+=  gcov.c
 diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/vfs/notify.c
 --- old/usr/src/minix/servers/vfs/notify.c	1970-01-01 01:00:00.000000000 +0100
-+++ src/usr/src/minix/servers/vfs/notify.c	2022-06-14 19:26:57.346805562 +0200
-@@ -0,0 +1,38 @@
++++ src/usr/src/minix/servers/vfs/notify.c	2022-06-14 20:22:58.797094209 +0200
+@@ -0,0 +1,26 @@
 +#include <fcntl.h>
 +#include <errno.h>
 +
@@ -95,28 +95,16 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/
 +#include "scratchpad.h"
 +
 +int do_notify(void) {
-+    printf("WCHODZE %d %d\n", m_in.m_lc_vfs_notify.fd, job_m_in.m_type);
 +    int event = m_in.m_lc_vfs_notify.event;
 +    if (event != NOTIFY_OPEN && event != NOTIFY_TRIOPEN &&
 +        event != NOTIFY_CREATE && event != NOTIFY_MOVE)
 +        return -EINVAL;
 +
-+    printf("POPRAWNY KOMUNIKAT\n");
 +    struct filp* filp = get_filp(m_in.m_lc_vfs_notify.fd, VNODE_NONE);
 +    
-+    struct vnode* vnode = filp->filp_vno;
-+    printf("MAM VNODE\n");
-+    printf("MAM LOCKA %d\n", vnode->listeners_count);
-+    
 +    if (listeners + 1 > NR_NOTIFY) {
-+        puts("JAHA");
 +        return -ENONOTIFY;
 +    }
-+
-+    listeners++;
-+
-+    vnode->listeners_count++;
-+    printf("MALO LOCKOW %d\n", vnode->listeners_count);
 +
 +    scratch(fp).file.filp = filp;
 +    suspend(FP_BLOCKED_ON_NOTIFY_OPEN);
@@ -124,7 +112,7 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/
 +}
 diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vfs/open.c
 --- old/usr/src/minix/servers/vfs/open.c	2022-06-11 09:31:08.215488928 +0200
-+++ src/usr/src/minix/servers/vfs/open.c	2022-06-14 19:30:05.700008328 +0200
++++ src/usr/src/minix/servers/vfs/open.c	2022-06-14 20:22:13.757092002 +0200
 @@ -32,6 +32,7 @@ static char mode_map[] = {R_BIT, W_BIT,
  static struct vnode *new_node(struct lookup *resolve, int oflags,
  	mode_t bits);
@@ -154,7 +142,7 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vf
  {
  /* Perform the close(fd) system call. */
    register struct filp *rfilp;
-@@ -711,3 +715,21 @@ int fd_nr;
+@@ -711,3 +715,14 @@ int fd_nr;
  
    return(OK);
  }
@@ -165,66 +153,33 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vf
 +void wake_listeners(filp)
 +struct filp *filp;
 +{
-+  struct vnode* vnode = filp->filp_vno;
-+
-+  if (vnode->listeners_count > 0) {
-+    printf("Listeners %d\n", vnode->listeners_count);  
-+    int wakings = vnode->listeners_count;
-+    release(vnode, VFS_NOTIFY, wakings);
-+
-+    vnode->listeners_count = 0;
-+    puts("Wychodze z petli");
-+  } // DEBUG
++  if (listeners > 0) {
++    release(filp->filp_vno, VFS_NOTIFY, listeners);
++  }
 +}
 \ No newline at end of file
 diff -rupNEZbB old/usr/src/minix/servers/vfs/pipe.c src/usr/src/minix/servers/vfs/pipe.c
 --- old/usr/src/minix/servers/vfs/pipe.c	2022-06-14 11:38:06.839122511 +0200
-+++ src/usr/src/minix/servers/vfs/pipe.c	2022-06-14 19:28:40.475733173 +0200
-@@ -301,13 +301,18 @@ void suspend(int why)
-  * The SUSPEND pseudo error should be returned after calling suspend().
-  */
- 
--  if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE)
-+  if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE || 
-+  	why == FP_BLOCKED_ON_NOTIFY_OPEN)
++++ src/usr/src/minix/servers/vfs/pipe.c	2022-06-14 20:48:33.801645568 +0200
+@@ -304,6 +304,8 @@ void suspend(int why)
+   if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE)
  	/* #procs susp'ed on pipe*/
  	susp_count++;
++  if (why == FP_BLOCKED_ON_NOTIFY_OPEN)
++	listeners++;
  
    fp->fp_blocked_on = why;
-+  if (why == FP_BLOCKED_ON_NOTIFY_OPEN)
-+	puts("NOTIFY OPEN");
    assert(fp->fp_grant == GRANT_INVALID || !GRANT_VALID(fp->fp_grant));
-   fp->fp_block_callnr = job_call_nr;
-+  if (job_call_nr == VFS_NOTIFY)
-+	puts("NOTIFY");
- }
- 
- /*===========================================================================*
-@@ -379,7 +384,8 @@ int count;			/* max number of processes
-   register struct fproc *rp;
-   struct filp *f;
-   int selop;
--
-+	if (op == VFS_NOTIFY)
-+		puts("VFS_NOTIFY RELEASE");
-   /* Trying to perform the call also includes SELECTing on it with that
-    * operation.
-    */
-@@ -402,6 +408,13 @@ int count;			/* max number of processes
- 
-   /* Search the proc table. */
-   for (rp = &fproc[0]; rp < &fproc[NR_PROCS] && count > 0; rp++) {
-+	if (op == VFS_NOTIFY && rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
-+		puts("?");
-+		if (scratch(rp).file.filp->filp_vno != vp)
-+			puts("KUPA");
-+		else 
-+			puts("GITUWA");
-+	}
- 	if (rp->fp_pid != PID_FREE && fp_is_blocked(rp) &&
- 	    !(rp->fp_flags & FP_REVIVED) && rp->fp_block_callnr == op) {
- 		/* Find the vnode. Depending on the reason the process was
-@@ -416,7 +428,8 @@ int count;			/* max number of processes
+@@ -369,7 +371,7 @@ void unsuspend_by_endpt(endpoint_t proc_
+  *===========================================================================*/
+ void release(vp, op, count)
+ register struct vnode *vp;	/* inode of pipe */
+-int op;				/* VFS_READ, VFS_WRITE, or VFS_OPEN */
++int op;				/* VFS_READ, VFS_WRITE, VFS_OPEN or VFS_NOTIFY */
+ int count;			/* max number of processes to release */
+ {
+ /* Check to see if any process is hanging on vnode 'vp'. If one is, and it
+@@ -416,7 +417,8 @@ int count;			/* max number of processes
  				continue;
  			if (rp->fp_filp[scratch(rp).file.fd_nr]->filp_vno != vp)
  				continue;
@@ -234,29 +189,48 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/pipe.c src/usr/src/minix/servers/vf
  			if (scratch(rp).file.filp == NULL)
  				continue;
  			if (scratch(rp).file.filp->filp_vno != vp)
-@@ -426,6 +439,8 @@ int count;			/* max number of processes
+@@ -424,11 +426,19 @@ int count;			/* max number of processes
+ 		} else
+ 			continue;
  
++		int blocked_on = rp->fp_blocked_on;
  		/* We found the vnode. Revive process. */
  		revive(rp->fp_endpoint, 0);
-+		if (FP_BLOCKED_ON_NOTIFY_OPEN)
++		if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
 +			listeners--;
++			if(listeners < 0)
++				panic("listeners now negative: %d", listeners);
++		}
++		else {
  		susp_count--;	/* keep track of who is suspended */
  		if(susp_count < 0)
  			panic("susp_count now negative: %d", susp_count);
-@@ -447,10 +462,12 @@ void revive(endpoint_t proc_e, int retur
-   struct fproc *rfp;
-   int blocked_on;
-   int fd_nr, slot;
--
-   if (proc_e == NONE || isokendpt(proc_e, &slot) != OK) return;
- 
-   rfp = &fproc[slot];
-+  if (rfp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
-+	  puts("GOod!");
-+  }
-   if (!fp_is_blocked(rfp) || (rfp->fp_flags & FP_REVIVED)) return;
- 
-   /* The 'reviving' flag only applies to pipes.  Processes waiting for TTY get
++		}
+ 		if (--count == 0) return;
+ 	}
+   }
+@@ -470,6 +479,9 @@ void revive(endpoint_t proc_e, int retur
+ 	if (blocked_on == FP_BLOCKED_ON_POPEN) {
+ 		/* process blocked in open or create */
+ 		replycode(proc_e, fd_nr);
++	} else if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
++		scratch(rfp).file.filp = NULL;
++		replycode(proc_e, returned);
+ 	} else if (blocked_on == FP_BLOCKED_ON_SELECT) {
+ 		replycode(proc_e, returned);
+ 	} else {
+diff -rupNEZbB old/usr/src/minix/servers/vfs/proto.h src/usr/src/minix/servers/vfs/proto.h
+--- old/usr/src/minix/servers/vfs/proto.h	2022-06-14 19:49:46.356055155 +0200
++++ src/usr/src/minix/servers/vfs/proto.h	2022-06-14 19:50:14.788076821 +0200
+@@ -348,4 +348,8 @@ void worker_wait(void);
+ struct worker_thread *worker_suspend(void);
+ void worker_resume(struct worker_thread *org_self);
+ void worker_set_proc(struct fproc *rfp);
++
++/* notify.c */
++int do_notify(void);
++
+ #endif
 diff -rupNEZbB old/usr/src/minix/servers/vfs/table.c src/usr/src/minix/servers/vfs/table.c
 --- old/usr/src/minix/servers/vfs/table.c	2022-06-07 20:57:36.093531325 +0200
 +++ src/usr/src/minix/servers/vfs/table.c	2022-06-07 21:37:09.213181982 +0200
@@ -266,47 +240,6 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/table.c src/usr/src/minix/servers/v
  	CALL(VFS_GETSYSINFO)	= do_getsysinfo,	/* getsysinfo(2) */
 +	CALL(VFS_NOTIFY)	= do_notify,		/* notify() */
  };
-diff -rupNEZbB old/usr/src/minix/servers/vfs/vnode.c src/usr/src/minix/servers/vfs/vnode.c
---- old/usr/src/minix/servers/vfs/vnode.c	2022-06-11 15:21:47.090169603 +0200
-+++ src/usr/src/minix/servers/vfs/vnode.c	2022-06-11 22:58:52.421698688 +0200
-@@ -145,6 +145,15 @@ void init_vnodes(void)
- 	vp->v_fs_count = 0;
- 	vp->v_mapfs_count = 0;
- 	tll_init(&vp->v_lock);
-+  if (cond_init(&vp->for_locker, NULL) != 0) panic("failed notify");
-+  if (cond_init(&vp->for_listeners, NULL) != 0) panic("failed notify");
-+  
-+  if (mutex_init(&vp->notify_lock, NULL) != 0) panic("failed notify");
-+  if (mutex_init(&vp->cascade_lock, NULL) != 0) panic("failed notify");
-+
-+  vp->listeners_count = 0;
-+  vp->failed_listeners_count = 0;
-+  vp->is_waking = 0;
-   }
- }
- 
-diff -rupNEZbB old/usr/src/minix/servers/vfs/vnode.h src/usr/src/minix/servers/vfs/vnode.h
---- old/usr/src/minix/servers/vfs/vnode.h	2022-06-11 15:00:29.531852588 +0200
-+++ src/usr/src/minix/servers/vfs/vnode.h	2022-06-11 22:58:56.889811314 +0200
-@@ -20,6 +20,18 @@ EXTERN struct vnode {
-   dev_t v_sdev;                 /* device number for special files */
-   struct vmnt *v_vmnt;          /* vmnt object of the partition */
-   tll_t v_lock;			/* three-level-lock */
-+  
-+  /* following are for do_notify() */
-+  mutex_t notify_lock;  /* Main notify mutex. */
-+  mutex_t cascade_lock;  /* Mutex for waking listeners. */
-+
-+  cond_t for_locker;    /* Wait for end of listeners waking */
-+  cond_t for_listeners; /* Wait for a new event */
-+
-+  int listeners_count;      /* Number of event listeners */
-+  int failed_listeners_count; /* Number of event listeners
-+                                 that has failed condition */
-+  int is_waking;
- } vnode[NR_VNODES];
- 
- /* vnode lock types mapping */
 diff -rupNEZbB old/usr/src/sys/sys/errno.h src/usr/src/sys/sys/errno.h
 --- old/usr/src/sys/sys/errno.h	2022-06-07 20:58:38.543769000 +0200
 +++ src/usr/src/sys/sys/errno.h	2022-06-07 21:37:42.474294372 +0200

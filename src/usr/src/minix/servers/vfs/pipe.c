@@ -301,18 +301,15 @@ void suspend(int why)
  * The SUSPEND pseudo error should be returned after calling suspend().
  */
 
-  if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE || 
-  	why == FP_BLOCKED_ON_NOTIFY_OPEN)
+  if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE)
 	/* #procs susp'ed on pipe*/
 	susp_count++;
+  if (why == FP_BLOCKED_ON_NOTIFY_OPEN)
+	listeners++;
 
   fp->fp_blocked_on = why;
-  if (why == FP_BLOCKED_ON_NOTIFY_OPEN)
-	puts("NOTIFY OPEN");
   assert(fp->fp_grant == GRANT_INVALID || !GRANT_VALID(fp->fp_grant));
   fp->fp_block_callnr = job_call_nr;
-  if (job_call_nr == VFS_NOTIFY)
-	puts("NOTIFY");
 }
 
 /*===========================================================================*
@@ -374,7 +371,7 @@ void unsuspend_by_endpt(endpoint_t proc_e)
  *===========================================================================*/
 void release(vp, op, count)
 register struct vnode *vp;	/* inode of pipe */
-int op;				/* VFS_READ, VFS_WRITE, or VFS_OPEN */
+int op;				/* VFS_READ, VFS_WRITE, VFS_OPEN or VFS_NOTIFY */
 int count;			/* max number of processes to release */
 {
 /* Check to see if any process is hanging on vnode 'vp'. If one is, and it
@@ -384,8 +381,7 @@ int count;			/* max number of processes to release */
   register struct fproc *rp;
   struct filp *f;
   int selop;
-	if (op == VFS_NOTIFY)
-		puts("VFS_NOTIFY RELEASE");
+
   /* Trying to perform the call also includes SELECTing on it with that
    * operation.
    */
@@ -408,13 +404,6 @@ int count;			/* max number of processes to release */
 
   /* Search the proc table. */
   for (rp = &fproc[0]; rp < &fproc[NR_PROCS] && count > 0; rp++) {
-	if (op == VFS_NOTIFY && rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
-		puts("?");
-		if (scratch(rp).file.filp->filp_vno != vp)
-			puts("KUPA");
-		else 
-			puts("GITUWA");
-	}
 	if (rp->fp_pid != PID_FREE && fp_is_blocked(rp) &&
 	    !(rp->fp_flags & FP_REVIVED) && rp->fp_block_callnr == op) {
 		/* Find the vnode. Depending on the reason the process was
@@ -437,13 +426,19 @@ int count;			/* max number of processes to release */
 		} else
 			continue;
 
+		int blocked_on = rp->fp_blocked_on;
 		/* We found the vnode. Revive process. */
 		revive(rp->fp_endpoint, 0);
-		if (FP_BLOCKED_ON_NOTIFY_OPEN)
+		if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
 			listeners--;
-		susp_count--;	/* keep track of who is suspended */
-		if(susp_count < 0)
-			panic("susp_count now negative: %d", susp_count);
+			if(listeners < 0)
+				panic("listeners now negative: %d", listeners);
+		}
+		else {
+			susp_count--;	/* keep track of who is suspended */
+			if(susp_count < 0)
+				panic("susp_count now negative: %d", susp_count);
+		}
 		if (--count == 0) return;
 	}
   }
@@ -465,9 +460,6 @@ void revive(endpoint_t proc_e, int returned)
   if (proc_e == NONE || isokendpt(proc_e, &slot) != OK) return;
 
   rfp = &fproc[slot];
-  if (rfp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
-	  puts("GOod!");
-  }
   if (!fp_is_blocked(rfp) || (rfp->fp_flags & FP_REVIVED)) return;
 
   /* The 'reviving' flag only applies to pipes.  Processes waiting for TTY get
@@ -487,6 +479,9 @@ void revive(endpoint_t proc_e, int returned)
 	if (blocked_on == FP_BLOCKED_ON_POPEN) {
 		/* process blocked in open or create */
 		replycode(proc_e, fd_nr);
+	} else if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
+		scratch(rfp).file.filp = NULL;
+		replycode(proc_e, returned);
 	} else if (blocked_on == FP_BLOCKED_ON_SELECT) {
 		replycode(proc_e, returned);
 	} else {
