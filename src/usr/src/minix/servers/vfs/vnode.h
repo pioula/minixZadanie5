@@ -31,6 +31,7 @@ EXTERN struct vnode {
   int listeners_count;      /* Number of event listeners */
   int failed_listeners_count; /* Number of event listeners
                                  that has failed condition */
+  int is_waking;
 } vnode[NR_VNODES];
 
 /* vnode lock types mapping */

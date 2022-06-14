@@ -32,6 +32,7 @@ static char mode_map[] = {R_BIT, W_BIT, R_BIT|W_BIT, 0};
 static struct vnode *new_node(struct lookup *resolve, int oflags,
                               mode_t bits);
 static int pipe_open(struct vnode *vp, mode_t bits, int oflags);
+static void wake_listeners(struct filp *filp);
 
 /*===========================================================================*
  *				do_open					     *
@@ -713,4 +714,22 @@ int close_fd(rfp, fd_nr)
     }
 
     return(OK);
+}
+
+/*===========================================================================*
+ *				wake_listeners				     *
+ *===========================================================================*/
+void wake_listeners(filp)
+struct filp *filp;
+{
+  struct vnode* vnode = filp->filp_vno;
+
+  if (vnode->listeners_count > 0) {
+    printf("Listeners %d\n", vnode->listeners_count);  
+    int wakings = vnode->listeners_count;
+    release(vnode, VFS_NOTIFY, wakings);
+
+    vnode->listeners_count = 0;
+    puts("Wychodze z petli");
+  } // DEBUG
 }

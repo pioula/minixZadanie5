@@ -39,7 +39,7 @@ diff -rupNEZbB old/usr/src/minix/include/minix/ipc.h src/usr/src/minix/include/m
  		mess_lc_vm_rusage	m_lc_vm_rusage;
 diff -rupNEZbB old/usr/src/minix/servers/vfs/const.h src/usr/src/minix/servers/vfs/const.h
 --- old/usr/src/minix/servers/vfs/const.h	2022-06-07 20:56:52.192042193 +0200
-+++ src/usr/src/minix/servers/vfs/const.h	2022-06-07 21:36:51.616594801 +0200
++++ src/usr/src/minix/servers/vfs/const.h	2022-06-14 11:34:31.602984243 +0200
 @@ -7,6 +7,7 @@
  #define NR_MNTS           16 	/* # slots in mount table */
  #define NR_VNODES       1024	/* # slots in vnode table */
@@ -48,55 +48,25 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/const.h src/usr/src/minix/servers/v
  
  #define NR_NONEDEVS	NR_MNTS	/* # slots in nonedev bitmap */
  
-diff -rupNEZbB old/usr/src/minix/servers/vfs/filedes.c src/usr/src/minix/servers/vfs/filedes.c
---- old/usr/src/minix/servers/vfs/filedes.c	2022-06-11 09:30:51.543197422 +0200
-+++ src/usr/src/minix/servers/vfs/filedes.c	2022-06-11 15:59:57.239669010 +0200
-@@ -240,6 +239,29 @@ void invalidate_filp_by_endpt(endpoint_t
- }
+@@ -22,6 +23,7 @@
+ #define FP_BLOCKED_ON_SELECT	4 /* susp'd on select */
+ #define FP_BLOCKED_ON_OTHER	5 /* blocked on other process, check
+ 				     fp_task to find out */
++#define FP_BLOCKED_ON_NOTIFY_OPEN	6 /* blocked on open notify */
  
- /*===========================================================================*
-+ *				wake_listeners				     *
-+ *===========================================================================*/
-+void wake_listeners(filp)
-+struct filp *filp;
-+{
-+  struct vnode* vnode = filp->filp_vno;
-+  if (mutex_trylock(&vnode->notify_lock) != 0)
-+    panic("notify mutex should be free");
-+
-+  if (vnode->listeners_count > 0)
-+    printf("Listeners %d\n", vnode->listeners_count);
-+  while (vnode->listeners_count > 0) {
-+    if (cond_wait(&vnode->for_locker, &vnode->notify_lock) != 0)
-+      panic("unable to wait on for_locker");
-+  }
-+  vnode->listeners_count = vnode->failed_listeners_count;
-+  vnode->failed_listeners_count = 0;
-+
-+  if (mutex_unlock(&vnode->notify_lock) != 0)
-+    panic("unable to release lock on notify");
-+}
-+
-+/*===========================================================================*
-  *				lock_filp				     *
-  *===========================================================================*/
- void lock_filp(filp, locktype)
-@@ -290,6 +312,7 @@ tll_access_t locktype;
- void unlock_filp(filp)
- struct filp *filp;
- {
-+  // puts("UNLOCK");
-   /* If this filp holds a soft lock on the vnode, we must be the owner */
-   if (filp->filp_softlock != NULL)
- 	assert(filp->filp_softlock == fp);
-@@ -307,6 +330,7 @@ struct filp *filp;
-   filp->filp_softlock = NULL;
-   if (mutex_unlock(&filp->filp_lock) != 0)
- 	panic("unable to release lock on filp");
-+  // puts("KONIEC UNLOCK");
- }
+ /* test if the process is blocked on something */
+ #define fp_is_blocked(fp)	((fp)->fp_blocked_on != FP_BLOCKED_ON_NONE)
+diff -rupNEZbB old/usr/src/minix/servers/vfs/glo.h src/usr/src/minix/servers/vfs/glo.h
+--- old/usr/src/minix/servers/vfs/glo.h	2022-06-14 19:22:30.533121621 +0200
++++ src/usr/src/minix/servers/vfs/glo.h	2022-06-14 19:24:05.569256614 +0200
+@@ -17,6 +17,7 @@ EXTERN int reviving;		/* number of pipe
+ EXTERN int pending;
+ EXTERN int sending;
+ EXTERN int verbose;
++EXTERN int listeners;       /* number of notify listeners */
  
- /*===========================================================================*
+ EXTERN dev_t ROOT_DEV;		/* device number of the root device */
+ EXTERN int ROOT_FS_E;           /* kernel endpoint of the root FS proc */
 diff -rupNEZbB old/usr/src/minix/servers/vfs/Makefile src/usr/src/minix/servers/vfs/Makefile
 --- old/usr/src/minix/servers/vfs/Makefile	2022-06-07 20:56:45.419819611 +0200
 +++ src/usr/src/minix/servers/vfs/Makefile	2022-06-07 21:36:45.384387067 +0200
@@ -112,8 +82,8 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/Makefile src/usr/src/minix/servers/
  SRCS+=  gcov.c
 diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/vfs/notify.c
 --- old/usr/src/minix/servers/vfs/notify.c	1970-01-01 01:00:00.000000000 +0100
-+++ src/usr/src/minix/servers/vfs/notify.c	2022-06-11 15:16:12.019441258 +0200
-@@ -0,0 +1,68 @@
++++ src/usr/src/minix/servers/vfs/notify.c	2022-06-14 19:26:57.346805562 +0200
+@@ -0,0 +1,38 @@
 +#include <fcntl.h>
 +#include <errno.h>
 +
@@ -121,71 +91,49 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/notify.c src/usr/src/minix/servers/
 +#include "const.h"
 +#include "file.h"
 +#include "vnode.h"
++#include "glo.h"
++#include "scratchpad.h"
 +
 +int do_notify(void) {
-+    printf("WCHODZE %d\n", m_in.m_lc_vfs_notify.fd);
++    printf("WCHODZE %d %d\n", m_in.m_lc_vfs_notify.fd, job_m_in.m_type);
 +    int event = m_in.m_lc_vfs_notify.event;
 +    if (event != NOTIFY_OPEN && event != NOTIFY_TRIOPEN &&
 +        event != NOTIFY_CREATE && event != NOTIFY_MOVE)
-+        return EINVAL;
++        return -EINVAL;
 +
 +    printf("POPRAWNY KOMUNIKAT\n");
 +    struct filp* filp = get_filp(m_in.m_lc_vfs_notify.fd, VNODE_NONE);
++    
 +    struct vnode* vnode = filp->filp_vno;
 +    printf("MAM VNODE\n");
-+
-+    if (mutex_lock(&vnode->notify_lock) != 0)
-+        panic("unable to lock mutex");
 +    printf("MAM LOCKA %d\n", vnode->listeners_count);
++    
++    if (listeners + 1 > NR_NOTIFY) {
++        puts("JAHA");
++        return -ENONOTIFY;
++    }
 +
-+    if (vnode->listeners_count >= NR_NOTIFY)
-+        return ENONOTIFY;
++    listeners++;
 +
 +    vnode->listeners_count++;
 +    printf("MALO LOCKOW %d\n", vnode->listeners_count);
-+    if (cond_wait(&vnode->for_listeners, &vnode->notify_lock) != 0)
-+        panic("unable to wait on notify_lock");
-+    vnode->listeners_count--;
 +
-+    printf("OBUDZILI MNIE!\n");
-+
-+    switch (event) {
-+        case NOTIFY_OPEN: {
-+            printf("OPEN\n");
-+            int listeners_count = vnode->listeners_count;
-+            if (mutex_unlock(&vnode->notify_lock) != 0)
-+                panic("unable to unlock mutex");
-+            printf("OTWARLEM MUTEXA I BUDZE\n");
-+            if (listeners_count > 0) {
-+                printf("BUDZE SWOICH\n");
-+                if (cond_signal(&vnode->for_listeners) != 0)
-+                    panic("unable to signal");
-+            }
-+            else {
-+                printf("BUDZE LOCKERA\n");
-+                if (cond_signal(&vnode->for_locker) != 0)
-+                    panic("unable to signal");
-+            }
-+
-+            return 0;
-+        }
-+        case NOTIFY_TRIOPEN: {
-+
-+        }
-+        case NOTIFY_CREATE: {
-+
-+        }
-+        case NOTIFY_MOVE: {
-+
-+        }
-+    }
-+
-+	return(ENOSYS);  // TODO: implementacja VFS_NOTIFY
++    scratch(fp).file.filp = filp;
++    suspend(FP_BLOCKED_ON_NOTIFY_OPEN);
++    return (SUSPEND);
 +}
 diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vfs/open.c
 --- old/usr/src/minix/servers/vfs/open.c	2022-06-11 09:31:08.215488928 +0200
-+++ src/usr/src/minix/servers/vfs/open.c	2022-06-11 15:57:05.738038174 +0200
-@@ -266,6 +266,9 @@ int common_open(char path[PATH_MAX], int
++++ src/usr/src/minix/servers/vfs/open.c	2022-06-14 19:30:05.700008328 +0200
+@@ -32,6 +32,7 @@ static char mode_map[] = {R_BIT, W_BIT,
+ static struct vnode *new_node(struct lookup *resolve, int oflags,
+ 	mode_t bits);
+ static int pipe_open(struct vnode *vp, mode_t bits, int oflags);
++static void wake_listeners(struct filp *filp);
+ 
+ /*===========================================================================*
+  *				do_open					     *
+@@ -266,6 +267,9 @@ int common_open(char path[PATH_MAX], int
  	}
    }
  
@@ -195,7 +143,7 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vf
    unlock_filp(filp);
  
    /* If error, release inode. */
-@@ -672,8 +675,8 @@ int do_close(void)
+@@ -672,8 +676,8 @@ int do_close(void)
   *				close_fd				     *
   *===========================================================================*/
  int close_fd(rfp, fd_nr)
@@ -206,26 +154,109 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/open.c src/usr/src/minix/servers/vf
  {
  /* Perform the close(fd) system call. */
    register struct filp *rfilp;
-diff -rupNEZbB old/usr/src/minix/servers/vfs/proto.h src/usr/src/minix/servers/vfs/proto.h
---- old/usr/src/minix/servers/vfs/proto.h	2022-06-07 20:57:18.604928936 +0200
-+++ src/usr/src/minix/servers/vfs/proto.h	2022-06-09 15:49:33.169863524 +0200
-@@ -74,6 +74,7 @@ struct filp *get_filp(int fild, tll_acce
- struct filp *get_filp2(struct fproc *rfp, int fild, tll_access_t locktype);
- void lock_filp(struct filp *filp, tll_access_t locktype);
- void unlock_filp(struct filp *filp);
-+void wake_listeners(struct filp *filp);
- void unlock_filps(struct filp *filp1, struct filp *filp2);
- void invalidate_filp(struct filp *);
- void invalidate_filp_by_endpt(endpoint_t proc_e);
-@@ -348,4 +349,8 @@ void worker_wait(void);
- struct worker_thread *worker_suspend(void);
- void worker_resume(struct worker_thread *org_self);
- void worker_set_proc(struct fproc *rfp);
+@@ -711,3 +715,21 @@ int fd_nr;
+ 
+   return(OK);
+ }
 +
-+/* notify.c */
-+int do_notify(void);
++/*===========================================================================*
++ *				wake_listeners				     *
++ *===========================================================================*/
++void wake_listeners(filp)
++struct filp *filp;
++{
++  struct vnode* vnode = filp->filp_vno;
 +
- #endif
++  if (vnode->listeners_count > 0) {
++    printf("Listeners %d\n", vnode->listeners_count);  
++    int wakings = vnode->listeners_count;
++    release(vnode, VFS_NOTIFY, wakings);
++
++    vnode->listeners_count = 0;
++    puts("Wychodze z petli");
++  } // DEBUG
++}
+\ No newline at end of file
+diff -rupNEZbB old/usr/src/minix/servers/vfs/pipe.c src/usr/src/minix/servers/vfs/pipe.c
+--- old/usr/src/minix/servers/vfs/pipe.c	2022-06-14 11:38:06.839122511 +0200
++++ src/usr/src/minix/servers/vfs/pipe.c	2022-06-14 19:28:40.475733173 +0200
+@@ -301,13 +301,18 @@ void suspend(int why)
+  * The SUSPEND pseudo error should be returned after calling suspend().
+  */
+ 
+-  if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE)
++  if (why == FP_BLOCKED_ON_POPEN || why == FP_BLOCKED_ON_PIPE || 
++  	why == FP_BLOCKED_ON_NOTIFY_OPEN)
+ 	/* #procs susp'ed on pipe*/
+ 	susp_count++;
+ 
+   fp->fp_blocked_on = why;
++  if (why == FP_BLOCKED_ON_NOTIFY_OPEN)
++	puts("NOTIFY OPEN");
+   assert(fp->fp_grant == GRANT_INVALID || !GRANT_VALID(fp->fp_grant));
+   fp->fp_block_callnr = job_call_nr;
++  if (job_call_nr == VFS_NOTIFY)
++	puts("NOTIFY");
+ }
+ 
+ /*===========================================================================*
+@@ -379,7 +384,8 @@ int count;			/* max number of processes
+   register struct fproc *rp;
+   struct filp *f;
+   int selop;
+-
++	if (op == VFS_NOTIFY)
++		puts("VFS_NOTIFY RELEASE");
+   /* Trying to perform the call also includes SELECTing on it with that
+    * operation.
+    */
+@@ -402,6 +408,13 @@ int count;			/* max number of processes
+ 
+   /* Search the proc table. */
+   for (rp = &fproc[0]; rp < &fproc[NR_PROCS] && count > 0; rp++) {
++	if (op == VFS_NOTIFY && rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
++		puts("?");
++		if (scratch(rp).file.filp->filp_vno != vp)
++			puts("KUPA");
++		else 
++			puts("GITUWA");
++	}
+ 	if (rp->fp_pid != PID_FREE && fp_is_blocked(rp) &&
+ 	    !(rp->fp_flags & FP_REVIVED) && rp->fp_block_callnr == op) {
+ 		/* Find the vnode. Depending on the reason the process was
+@@ -416,7 +428,8 @@ int count;			/* max number of processes
+ 				continue;
+ 			if (rp->fp_filp[scratch(rp).file.fd_nr]->filp_vno != vp)
+ 				continue;
+-		} else if (rp->fp_blocked_on == FP_BLOCKED_ON_PIPE) {
++		} else if (rp->fp_blocked_on == FP_BLOCKED_ON_PIPE || 
++			rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
+ 			if (scratch(rp).file.filp == NULL)
+ 				continue;
+ 			if (scratch(rp).file.filp->filp_vno != vp)
+@@ -426,6 +439,8 @@ int count;			/* max number of processes
+ 
+ 		/* We found the vnode. Revive process. */
+ 		revive(rp->fp_endpoint, 0);
++		if (FP_BLOCKED_ON_NOTIFY_OPEN)
++			listeners--;
+ 		susp_count--;	/* keep track of who is suspended */
+ 		if(susp_count < 0)
+ 			panic("susp_count now negative: %d", susp_count);
+@@ -447,10 +462,12 @@ void revive(endpoint_t proc_e, int retur
+   struct fproc *rfp;
+   int blocked_on;
+   int fd_nr, slot;
+-
+   if (proc_e == NONE || isokendpt(proc_e, &slot) != OK) return;
+ 
+   rfp = &fproc[slot];
++  if (rfp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN) {
++	  puts("GOod!");
++  }
+   if (!fp_is_blocked(rfp) || (rfp->fp_flags & FP_REVIVED)) return;
+ 
+   /* The 'reviving' flag only applies to pipes.  Processes waiting for TTY get
 diff -rupNEZbB old/usr/src/minix/servers/vfs/table.c src/usr/src/minix/servers/vfs/table.c
 --- old/usr/src/minix/servers/vfs/table.c	2022-06-07 20:57:36.093531325 +0200
 +++ src/usr/src/minix/servers/vfs/table.c	2022-06-07 21:37:09.213181982 +0200
@@ -237,37 +268,42 @@ diff -rupNEZbB old/usr/src/minix/servers/vfs/table.c src/usr/src/minix/servers/v
  };
 diff -rupNEZbB old/usr/src/minix/servers/vfs/vnode.c src/usr/src/minix/servers/vfs/vnode.c
 --- old/usr/src/minix/servers/vfs/vnode.c	2022-06-11 15:21:47.090169603 +0200
-+++ src/usr/src/minix/servers/vfs/vnode.c	2022-06-11 15:23:02.570784911 +0200
-@@ -145,6 +145,14 @@ void init_vnodes(void)
++++ src/usr/src/minix/servers/vfs/vnode.c	2022-06-11 22:58:52.421698688 +0200
+@@ -145,6 +145,15 @@ void init_vnodes(void)
  	vp->v_fs_count = 0;
  	vp->v_mapfs_count = 0;
  	tll_init(&vp->v_lock);
-+  if (cond_init(&vp->for_locker, NULL) != 0)
-+    panic("Failed to initialize for_locker condition variable");
-+  if (cond_init(&vp->for_listeners, NULL) != 0)
-+    panic("Failed to initialize for_listeners condition variable");
-+  if (mutex_init(&vp->notify_lock, NULL) != 0)
-+    panic("Failed to initialize notify mutex");
++  if (cond_init(&vp->for_locker, NULL) != 0) panic("failed notify");
++  if (cond_init(&vp->for_listeners, NULL) != 0) panic("failed notify");
++  
++  if (mutex_init(&vp->notify_lock, NULL) != 0) panic("failed notify");
++  if (mutex_init(&vp->cascade_lock, NULL) != 0) panic("failed notify");
++
 +  vp->listeners_count = 0;
 +  vp->failed_listeners_count = 0;
++  vp->is_waking = 0;
    }
  }
  
 diff -rupNEZbB old/usr/src/minix/servers/vfs/vnode.h src/usr/src/minix/servers/vfs/vnode.h
 --- old/usr/src/minix/servers/vfs/vnode.h	2022-06-11 15:00:29.531852588 +0200
-+++ src/usr/src/minix/servers/vfs/vnode.h	2022-06-11 15:13:07.841944892 +0200
-@@ -20,6 +20,14 @@ EXTERN struct vnode {
++++ src/usr/src/minix/servers/vfs/vnode.h	2022-06-11 22:58:56.889811314 +0200
+@@ -20,6 +20,18 @@ EXTERN struct vnode {
    dev_t v_sdev;                 /* device number for special files */
    struct vmnt *v_vmnt;          /* vmnt object of the partition */
    tll_t v_lock;			/* three-level-lock */
 +  
 +  /* following are for do_notify() */
-+  mutex_t notify_lock; /* Mutex for notify. */
-+  cond_t for_locker;    /* Wait for listeners to process new file state */
++  mutex_t notify_lock;  /* Main notify mutex. */
++  mutex_t cascade_lock;  /* Mutex for waking listeners. */
++
++  cond_t for_locker;    /* Wait for end of listeners waking */
 +  cond_t for_listeners; /* Wait for a new event */
++
 +  int listeners_count;      /* Number of event listeners */
 +  int failed_listeners_count; /* Number of event listeners
 +                                 that has failed condition */
++  int is_waking;
  } vnode[NR_VNODES];
  
  /* vnode lock types mapping */

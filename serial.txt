@@ -1,0 +1,22 @@
+
+MINIX 3.3.0. Copyright 2014, Vrije Universiteit, Amsterdam, The Netherlands
+MINIX is open source software, see http://www.minix3.org
+TTY: not initializing rs232 line 0 (in use by kernel)
+Started VFS: 9 worker thread(s)
+virtio-net: Mac set by host: 52:54:00:12:34:56
+virtio-net: Current Status 1
+virtio-net: Host supports control channel
+virtio-net: Host supports control channel for RX
+WCHODZE 3 305
+POPRAWNY KOMUNIKAT
+MAM VNODE
+MAM LOCKA 0
+MALO LOCKOW 1
+OBUDZILI MNIE
+OPEN
+Listeners 1
+Wychodze z petli
+PM: coredump signal 6 for 211 / test
+    test 32955  0xf100117c 0x7f206f1 0x7f1e623 0x7f1e314 0x7f1dd69 0x7ed9f8a 0x804bf5d 0x80593b8 0x80497e3 0x8049708 
+virtio-net: Terminating
+MINIX will now be shut down ...
