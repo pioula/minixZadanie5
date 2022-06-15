@@ -382,7 +382,7 @@ int count;			/* max number of processes to release */
   register struct fproc *rp;
   struct filp *f;
   int selop;
-
+  int notify_block;
   /* Trying to perform the call also includes SELECTing on it with that
    * operation.
    */
@@ -403,6 +403,11 @@ int count;			/* max number of processes to release */
 	}
   }
 
+  if (op == FP_BLOCKED_ON_NOTIFY_CREATE) {
+	  notify_block = op;
+	  op = VFS_NOTIFY;
+  }
+
   /* Search the proc table. */
   for (rp = &fproc[0]; rp < &fproc[NR_PROCS] && count > 0; rp++) {
 	if (rp->fp_pid != PID_FREE && fp_is_blocked(rp) &&
@@ -421,7 +426,9 @@ int count;			/* max number of processes to release */
 				continue;
 			if (rp->fp_filp[scratch(rp).file.fd_nr]->filp_vno != vp)
 				continue;
-		} else if (rp->fp_blocked_on == FP_BLOCKED_ON_PIPE) {
+		} else if (rp->fp_blocked_on == FP_BLOCKED_ON_PIPE ||
+			(notify_block == FP_BLOCKED_ON_NOTIFY_CREATE && 
+			rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_CREATE)) {
 			if (scratch(rp).file.filp == NULL)
 				continue;
 			if (scratch(rp).file.filp->filp_vno != vp)
@@ -485,7 +492,8 @@ void revive(endpoint_t proc_e, int returned)
 		/* process blocked in open or create */
 		replycode(proc_e, fd_nr);
 	} else if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN || 
-		blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN) {
+		blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN ||
+		blocked_on == FP_BLOCKED_ON_NOTIFY_CREATE) {
 		replycode(proc_e, returned);
 	} else if (blocked_on == FP_BLOCKED_ON_SELECT) {
 		replycode(proc_e, returned);
@@ -580,6 +588,7 @@ void unpause(void)
 	case FP_BLOCKED_ON_NOTIFY_TRIOPEN:
 	case FP_BLOCKED_ON_NOTIFY_CREATE:
 	case FP_BLOCKED_ON_NOTIFY_MOVE:
+		listeners--;
 		break;
 	default :
 		panic("VFS: unknown block reason: %d", blocked_on);

@@ -32,7 +32,7 @@ static char mode_map[] = {R_BIT, W_BIT, R_BIT|W_BIT, 0};
 static struct vnode *new_node(struct lookup *resolve, int oflags,
                               mode_t bits);
 static int pipe_open(struct vnode *vp, mode_t bits, int oflags);
-static void wake_listeners(struct filp *filp, int why);
+static void wake_listeners(struct vnode *vp, int why);
 
 /*===========================================================================*
  *				do_open					     *
@@ -268,7 +268,10 @@ int common_open(char path[PATH_MAX], int oflags, mode_t omode)
     }
 
     if (r == OK && (oflags == 0)) {
-        wake_listeners(filp, VFS_NOTIFY);
+        wake_listeners(filp->filp_vno, VFS_NOTIFY);
+    }
+    if (r == OK && (oflags & O_CREAT)) {
+        wake_listeners(fp->fp_wd, FP_BLOCKED_ON_NOTIFY_CREATE);
     }
     unlock_filp(filp);
 
@@ -466,7 +469,9 @@ static struct vnode *new_node(struct lookup *resolve, int oflags, mode_t bits)
     }
     unlock_vmnt(dir_vmp);
     put_vnode(dirp);
-
+    if (r == OK) {
+        wake_listeners(fp->fp_wd, FP_BLOCKED_ON_NOTIFY_CREATE);
+    }
     *(resolve->l_vnode) = vp;
     return(vp);
 }
@@ -545,6 +550,9 @@ int do_mknod(void)
                       fp->fp_effgid, bits, dev);
     }
 
+    if (r == OK) {
+        wake_listeners(fp->fp_wd, FP_BLOCKED_ON_NOTIFY_CREATE);
+    }
     unlock_vnode(vp);
     unlock_vmnt(vmp);
     put_vnode(vp);
@@ -583,7 +591,9 @@ int do_mkdir(void)
         r = req_mkdir(vp->v_fs_e, vp->v_inode_nr, fullpath, fp->fp_effuid,
                       fp->fp_effgid, bits);
     }
-    
+    if (r == OK) {
+        wake_listeners(fp->fp_wd, FP_BLOCKED_ON_NOTIFY_CREATE);
+    }
     unlock_vnode(vp);
     unlock_vmnt(vmp);
     put_vnode(vp);
@@ -718,11 +728,11 @@ int fd_nr;
 /*===========================================================================*
  *				wake_listeners				     *
  *===========================================================================*/
-void wake_listeners(filp, why)
-struct filp *filp;
+void wake_listeners(vp, why)
+struct vnode *vp;
 int why;
 {
   if (listeners > 0) {
-    release(filp->filp_vno, why, listeners);
+    release(vp, why, listeners);
   }
 }

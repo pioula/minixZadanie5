@@ -18,6 +18,7 @@ int do_notify(void) {
     if (err_code != OK)
         return err_code;
 
+    printf("listeners %d\n", listeners);
     if (listeners + 1 > NR_NOTIFY) {
         return ENONOTIFY;
     }
