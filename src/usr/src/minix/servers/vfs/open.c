@@ -32,7 +32,6 @@ static char mode_map[] = {R_BIT, W_BIT, R_BIT|W_BIT, 0};
 static struct vnode *new_node(struct lookup *resolve, int oflags,
                               mode_t bits);
 static int pipe_open(struct vnode *vp, mode_t bits, int oflags);
-static void wake_listeners(struct vnode *vp, int why);
 
 /*===========================================================================*
  *				do_open					     *
@@ -270,9 +269,6 @@ int common_open(char path[PATH_MAX], int oflags, mode_t omode)
     if (r == OK && (oflags == 0)) {
         wake_listeners(filp->filp_vno, VFS_NOTIFY);
     }
-    if (r == OK && (oflags & O_CREAT)) {
-        wake_listeners(fp->fp_wd, FP_BLOCKED_ON_NOTIFY_CREATE);
-    }
     unlock_filp(filp);
 
     /* If error, release inode. */
@@ -464,14 +460,14 @@ static struct vnode *new_node(struct lookup *resolve, int oflags, mode_t bits)
     /* When dirp equals vp, we shouldn't release the lock as a vp is locked only
      * once. Releasing the lock would cause the resulting vp not be locked and
      * cause mayhem later on. */
+    if (r == OK) {
+        wake_listeners(dirp, FP_BLOCKED_ON_NOTIFY_CREATE);
+    }
     if (dirp != vp) {
         unlock_vnode(dirp);
     }
     unlock_vmnt(dir_vmp);
     put_vnode(dirp);
-    if (r == OK) {
-        wake_listeners(fp->fp_wd, FP_BLOCKED_ON_NOTIFY_CREATE);
-    }
     *(resolve->l_vnode) = vp;
     return(vp);
 }
@@ -551,7 +547,7 @@ int do_mknod(void)
     }
 
     if (r == OK) {
-        wake_listeners(fp->fp_wd, FP_BLOCKED_ON_NOTIFY_CREATE);
+        wake_listeners(vp, FP_BLOCKED_ON_NOTIFY_CREATE);
     }
     unlock_vnode(vp);
     unlock_vmnt(vmp);
@@ -592,7 +588,7 @@ int do_mkdir(void)
                       fp->fp_effgid, bits);
     }
     if (r == OK) {
-        wake_listeners(fp->fp_wd, FP_BLOCKED_ON_NOTIFY_CREATE);
+        wake_listeners(vp, FP_BLOCKED_ON_NOTIFY_CREATE);
     }
     unlock_vnode(vp);
     unlock_vmnt(vmp);
@@ -723,16 +719,4 @@ int fd_nr;
             lock_revive();	/* one or more locks released */
     }
     return(OK);
-}
-
-/*===========================================================================*
- *				wake_listeners				     *
- *===========================================================================*/
-void wake_listeners(vp, why)
-struct vnode *vp;
-int why;
-{
-  if (listeners > 0) {
-    release(vp, why, listeners);
-  }
 }

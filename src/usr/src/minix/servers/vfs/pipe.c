@@ -372,7 +372,8 @@ void unsuspend_by_endpt(endpoint_t proc_e)
  *===========================================================================*/
 void release(vp, op, count)
 register struct vnode *vp;	/* inode of pipe */
-int op;				/* VFS_READ, VFS_WRITE, VFS_OPEN or VFS_NOTIFY */
+int op;				/* VFS_READ, VFS_WRITE, VFS_OPEN, VFS_NOTIFY
+					   FP_BLOCKED_ON_NOTIFY_CREATE, FP_BLOCKED_ON_NOTIFY_MOVE */
 int count;			/* max number of processes to release */
 {
 /* Check to see if any process is hanging on vnode 'vp'. If one is, and it
@@ -403,7 +404,7 @@ int count;			/* max number of processes to release */
 	}
   }
 
-  if (op == FP_BLOCKED_ON_NOTIFY_CREATE) {
+  if (op == FP_BLOCKED_ON_NOTIFY_CREATE || op == FP_BLOCKED_ON_NOTIFY_MOVE) {
 	  notify_block = op;
 	  op = VFS_NOTIFY;
   }
@@ -415,7 +416,17 @@ int count;			/* max number of processes to release */
 		/* Find the vnode. Depending on the reason the process was
 		 * suspended, there are different ways of finding it.
 		 */
-		if (rp->fp_blocked_on == FP_BLOCKED_ON_POPEN ||
+		if (notify_block == FP_BLOCKED_ON_NOTIFY_CREATE || 
+			notify_block == FP_BLOCKED_ON_NOTIFY_MOVE) {
+			if (rp->fp_blocked_on == notify_block) {
+				if (scratch(rp).file.filp == NULL)
+					continue;
+				if (scratch(rp).file.filp->filp_vno != vp)
+					continue;
+			} else
+				continue;
+		}
+		else if (rp->fp_blocked_on == FP_BLOCKED_ON_POPEN ||
 		    rp->fp_blocked_on == FP_BLOCKED_ON_LOCK ||
 		    rp->fp_blocked_on == FP_BLOCKED_ON_OTHER ||
 			rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN ||
@@ -426,9 +437,7 @@ int count;			/* max number of processes to release */
 				continue;
 			if (rp->fp_filp[scratch(rp).file.fd_nr]->filp_vno != vp)
 				continue;
-		} else if (rp->fp_blocked_on == FP_BLOCKED_ON_PIPE ||
-			(notify_block == FP_BLOCKED_ON_NOTIFY_CREATE && 
-			rp->fp_blocked_on == FP_BLOCKED_ON_NOTIFY_CREATE)) {
+		} else if (rp->fp_blocked_on == FP_BLOCKED_ON_PIPE) {
 			if (scratch(rp).file.filp == NULL)
 				continue;
 			if (scratch(rp).file.filp->filp_vno != vp)
@@ -493,9 +502,9 @@ void revive(endpoint_t proc_e, int returned)
 		replycode(proc_e, fd_nr);
 	} else if (blocked_on == FP_BLOCKED_ON_NOTIFY_OPEN || 
 		blocked_on == FP_BLOCKED_ON_NOTIFY_TRIOPEN ||
-		blocked_on == FP_BLOCKED_ON_NOTIFY_CREATE) {
-		replycode(proc_e, returned);
-	} else if (blocked_on == FP_BLOCKED_ON_SELECT) {
+		blocked_on == FP_BLOCKED_ON_NOTIFY_CREATE ||
+		blocked_on == FP_BLOCKED_ON_NOTIFY_MOVE ||
+		blocked_on == FP_BLOCKED_ON_SELECT) {
 		replycode(proc_e, returned);
 	} else {
 		/* Revive a process suspended on TTY or other device.

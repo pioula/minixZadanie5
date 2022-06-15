@@ -8,6 +8,21 @@
 #include "glo.h"
 #include "scratchpad.h"
 
+/*===========================================================================*
+ *				wake_listeners				     *
+ *===========================================================================*/
+void wake_listeners(vp, why)
+struct vnode *vp;
+int why;
+{
+  if (listeners > 0) {
+    release(vp, why, listeners);
+  }
+}
+
+/*===========================================================================*
+ *				do_notify				     *
+ *===========================================================================*/
 int do_notify(void) {
     int event = m_in.m_lc_vfs_notify.event;
     if (event != NOTIFY_OPEN && event != NOTIFY_TRIOPEN &&
@@ -18,7 +33,6 @@ int do_notify(void) {
     if (err_code != OK)
         return err_code;
 
-    printf("listeners %d\n", listeners);
     if (listeners + 1 > NR_NOTIFY) {
         return ENONOTIFY;
     }
@@ -44,5 +58,12 @@ int do_notify(void) {
         suspend(FP_BLOCKED_ON_NOTIFY_CREATE);
         return (SUSPEND);
     }
-    return (OK);
+    
+    if (event == NOTIFY_MOVE) {
+        scratch(fp).file.filp = filp;
+        suspend(FP_BLOCKED_ON_NOTIFY_MOVE);
+        return (SUSPEND);
+    }
+
+    return EINVAL;
 }

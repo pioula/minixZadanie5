@@ -351,5 +351,6 @@ void worker_set_proc(struct fproc *rfp);
 
 /* notify.c */
 int do_notify(void);
+void wake_listeners(struct vnode *vp, int why);
 
 #endif
